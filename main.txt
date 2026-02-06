@@ -1,0 +1,166 @@
+import os
+import argparse
+from dotenv import load_dotenv
+from google import genai
+from google.genai import types
+from functions.prompts import system_prompt
+from call_function import available_functions, call_function
+
+
+
+def main():
+   # print("Hello from ai-learn!")
+
+    # Argument parsing
+
+    parser = argparse.ArgumentParser(description="Chatbot")
+    parser.add_argument(
+        "user_prompt",
+        type=str,
+        help="User prompt"
+    )
+    parser.add_argument(
+        "--verbose",
+        action="store_true",
+        help="Enable verbose output"
+        )
+    args = parser.parse_args()
+    # -----------------------------
+    # Environment + API setup
+    # -----------------------------
+    load_dotenv()
+
+    # Read the API key
+    api_key = os.environ.get("GEMINI_API_KEY")
+
+    # Fail fast if the key is missing
+    if api_key is None:
+        raise RuntimeError(
+            "GEMINI_API_KEY not found. Make sure it is set in your .env file."
+        )
+
+    # Create Gemini client
+    client = genai.Client(api_key=api_key)
+
+    # Build message list
+    messages = [
+        types.Content(
+            role="user",
+            parts=[
+                types.Part(
+                    text=args.user_prompt
+                )
+            ],
+        )
+    ]
+
+    #prompt = (
+    #    "Why is Boot.dev such a great place to learn backend development?"
+    #    "Use on paragraph maximum."
+    #)
+
+    # Generate content
+    for iteration in range(20):
+        if args.verbose:
+            print(f"\n--- Iteration {iteration + 1} ---")
+
+        try: 
+            response = client.models.generate_content(
+                model="gemini-2.5-flash",
+                contents=messages,
+                config=types.GenerateContentConfig(
+                    tools=[available_functions], system_instruction=system_prompt
+                )
+            )
+        except Exception as e:
+            print(f"Error: {e}")
+            return
+        
+        if response.candidates:
+            for candidate in response.candidates:
+                messages.append(candidate.content)
+
+    # -----------------------------
+    # Handle function calls OR text
+    # -----------------------------
+        function_results = []
+
+        if response.function_calls:
+            for function_call in response.function_calls:
+                if args.verbose:
+                    print(f"Calling function: {function_call.name}({function_call.args})")
+
+
+                function_call_result = call_function(
+                    function_call,
+                    verbose=args.verbose
+                )
+
+                # Defensive checks
+                if not function_call_result.parts:
+                    raise RuntimeError("Function call returned no parts")
+
+                function_response = function_call_result.parts[0].function_response
+                if function_response is None:
+                    raise RuntimeError("Function response is None")
+
+                if function_response.response is None:
+                    raise RuntimeError("Function response payload is None")
+
+                function_results.append(function_call_result.parts[0])
+
+                if args.verbose:
+                    print(f"-> {function_response.response}")
+
+            messages.append(
+                types.Content(
+                    role="user",
+                    parts=function_results,
+                )
+            )
+
+            continue
+
+        
+        print(response.text)
+
+#    # Verify usage metadata exists
+#    if response.usage_metadata is None:
+#        raise RuntimeError (
+#            "No usage metadata found in the response. The API request may have failed."
+#        )
+#    
+#    # Extract token counts
+#    prompt_tokens = response.usage_metadata.prompt_token_count
+#    response_tokens = response.usage_metadata.candidates_token_count
+#
+#    # Print token usage
+#    if args.verbose:
+#        print(f"User prompt: {args.user_prompt}")
+#        print(f"Prompt tokens: {prompt_tokens}")
+#        print(f"Response tokens: {response_tokens}")
+#        print("Response:")
+#    
+#    # Response prints
+#    if response.function_calls:
+#        for function_call in response.function_calls:
+#            print(f"Calling function: {function_call.name}({function_call.args})")
+    # -----------------------------
+    # Token usage (optional)
+    # -----------------------------
+    if args.verbose and response.usage_metadata:
+        print("\n--- Token Usage ---")
+        print(f"Prompt tokens: {response.usage_metadata.prompt_token_count}")
+        print(f"Response tokens: {response.usage_metadata.candidates_token_count}")
+
+    return
+
+# -----------------------------
+# Safety exit (loop limit hit)
+# -----------------------------
+print("Error: agent did not finish within 20 iterations.")
+exit(1)
+
+
+if __name__ == "__main__":
+    main()
